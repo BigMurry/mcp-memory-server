@@ -1,6 +1,9 @@
 import * as queries from '../database/queries.js';
 import type { RecallInput, RecallOutput, SearchInput, SearchOutput } from '../types/index.js';
 
+// Resource limits
+const MAX_FETCH_MEMORIES = 5000;
+
 export function recallMemories(input: RecallInput): RecallOutput {
   const { query, limit = 10, tags, date_range } = input;
 
@@ -61,21 +64,26 @@ export function searchMemories(input: SearchInput): SearchOutput {
     offset = 0,
   } = input;
 
+  // Enforce maximum fetch limit
+  const effectiveLimit = Math.min(limit, MAX_FETCH_MEMORIES - offset);
+
   let memories;
 
   if (query && query.trim().length > 0) {
     // Use FTS search
-    const results = queries.searchMemoriesFTS(query, limit * 2, tags);
+    const results = queries.searchMemoriesFTS(query, effectiveLimit * 2, tags);
     memories = results;
   } else if (tags && tags.length > 0) {
     // Filter by tags only - get all memories and filter
-    memories = queries.getAllMemories().filter(m => {
+    // Limit the fetch to prevent memory exhaustion
+    const allMemories = queries.getAllMemoriesLimited(MAX_FETCH_MEMORIES);
+    memories = allMemories.filter(m => {
       if (!m.tags) return false;
       return tags.every(t => m.tags!.includes(t.toLowerCase()));
     });
   } else {
-    // Get all memories
-    memories = queries.getAllMemories();
+    // Get all memories with limit
+    memories = queries.getAllMemoriesLimited(MAX_FETCH_MEMORIES);
   }
 
   // Apply date range filter

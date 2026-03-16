@@ -22,6 +22,10 @@ import {
   handleDeleteMemory,
 } from './tools/management.js';
 
+// Generic error messages for clients
+const INTERNAL_ERROR_MESSAGE = 'An internal error occurred';
+const UNKNOWN_TOOL_MESSAGE = 'Unknown tool';
+
 class MemoryServer {
   private server: Server;
 
@@ -87,7 +91,7 @@ class MemoryServer {
             result = await handleDeleteMemory(args);
             break;
           default:
-            throw new Error(`Unknown tool: ${name}`);
+            throw new Error(`${UNKNOWN_TOOL_MESSAGE}: ${name}`);
         }
 
         return {
@@ -99,21 +103,35 @@ class MemoryServer {
           ],
         };
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const isValidationError = error instanceof ValidationError;
 
-        logger.error(`Tool error: ${name}`, {
-          tool: name,
-          error: errorMessage,
-          validation: isValidationError,
-        });
+        // Log detailed error server-side
+        if (isValidationError) {
+          logger.warn(`Validation error in ${name}`, {
+            tool: name,
+            error: error.message,
+          });
+        } else {
+          logger.error(`Tool error: ${name}`, {
+            tool: name,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            stack: error instanceof Error ? error.stack : undefined,
+          });
+        }
+
+        // Return sanitized error to client
+        const clientErrorMessage = isValidationError
+          ? error.message
+          : (error instanceof Error && error.message.startsWith(UNKNOWN_TOOL_MESSAGE)
+              ? error.message
+              : INTERNAL_ERROR_MESSAGE);
 
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                error: errorMessage,
+                error: clientErrorMessage,
                 type: isValidationError ? 'validation' : 'internal',
               }),
             },
@@ -131,6 +149,7 @@ class MemoryServer {
     } catch (error) {
       logger.error('Failed to initialize database', {
         error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
       });
       process.exit(1);
     }
@@ -148,6 +167,7 @@ const server = new MemoryServer();
 server.run().catch((error) => {
   logger.error('Failed to start server', {
     error: error instanceof Error ? error.message : 'Unknown error',
+    stack: error instanceof Error ? error.stack : undefined,
   });
   process.exit(1);
 });
@@ -163,6 +183,7 @@ async function shutdown(signal: string) {
   } catch (error) {
     logger.error('Error during shutdown', {
       error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
     });
     process.exit(1);
   }
@@ -183,6 +204,7 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled rejection', {
     reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
   });
   process.exit(1);
 });

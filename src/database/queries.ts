@@ -27,6 +27,15 @@ export function getAllMemories(): MemoryWithTags[] {
   }));
 }
 
+export function getAllMemoriesLimited(limit: number = 1000): MemoryWithTags[] {
+  const db = getDatabase();
+  const memories = db.prepare('SELECT * FROM memories ORDER BY created_at DESC LIMIT ?').all(limit) as any[];
+  return memories.map(m => ({
+    ...m,
+    tags: getTagsForMemory(m.id),
+  }));
+}
+
 export function deleteMemoryById(id: number): boolean {
   const db = getDatabase();
   const stmt = db.prepare('DELETE FROM memories WHERE id = ?');
@@ -122,7 +131,10 @@ export function searchMemoriesFTS(
   const db = getDatabase();
 
   // Format query for FTS5 - escape special chars and add wildcards for partial matches
+  // FTS5 special chars: * - : ^ ( ) " { } [ ] ~ AND OR NOT
+  const ftsSpecialChars = /[*\-:\^()\"\{\}\[\]~]/g;
   const ftsQuery = query
+    .replace(ftsSpecialChars, ' ') // Replace special chars with space
     .replace(/['"]/g, '') // Remove quotes
     .split(/\s+/)
     .filter(w => w.length > 0)

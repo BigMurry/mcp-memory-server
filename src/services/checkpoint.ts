@@ -1,5 +1,11 @@
 import * as queries from '../database/queries.js';
 import type { CreateCheckpointInput, CreateCheckpointOutput, ListCheckpointsInput, ListCheckpointsOutput } from '../types/index.js';
+import { ValidationError } from '../utils/validators.js';
+
+// Resource limits
+const MAX_CHECKPOINT_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_CHECKPOINTS_LIMIT = 100;
+const MAX_CHECKPOINTS_OFFSET = 1000;
 
 export function createCheckpoint(input: CreateCheckpointInput): CreateCheckpointOutput {
   const { description } = input;
@@ -9,6 +15,11 @@ export function createCheckpoint(input: CreateCheckpointInput): CreateCheckpoint
 
   // Create snapshot
   const snapshot = JSON.stringify(memories);
+
+  // Check snapshot size
+  if (snapshot.length > MAX_CHECKPOINT_SIZE) {
+    throw new ValidationError(`Checkpoint too large (max ${MAX_CHECKPOINT_SIZE / 1024 / 1024}MB). Consider deleting some memories.`);
+  }
 
   // Save checkpoint
   const checkpointId = queries.createCheckpoint(description || null, snapshot);
@@ -22,7 +33,15 @@ export function createCheckpoint(input: CreateCheckpointInput): CreateCheckpoint
 }
 
 export function listCheckpoints(input: ListCheckpointsInput): ListCheckpointsOutput {
-  const { limit = 10, offset = 0 } = input;
+  let { limit = 10, offset = 0 } = input;
+
+  // Enforce limits
+  if (limit > MAX_CHECKPOINTS_LIMIT) {
+    limit = MAX_CHECKPOINTS_LIMIT;
+  }
+  if (offset > MAX_CHECKPOINTS_OFFSET) {
+    offset = MAX_CHECKPOINTS_OFFSET;
+  }
 
   const checkpoints = queries.getAllCheckpoints(limit, offset);
 
