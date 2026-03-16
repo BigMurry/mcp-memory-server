@@ -313,32 +313,39 @@ CREATE INDEX idx_checkpoints_created ON checkpoints(created_at DESC);
 mcp-memory-server/
 ├── src/
 │   ├── index.ts              # Entry point, MCP server setup
-│   ├── config.ts              # Configuration management
+│   ├── config.ts             # Configuration management
 │   ├── database/
-│   │   ├── index.ts           # Database connection pool
-│   │   ├── migrations.ts      # Schema initialization
-│   │   └── queries.ts         # Raw SQL queries
+│   │   ├── index.ts          # Database connection & reset function
+│   │   ├── migrations.ts     # Schema initialization with indexes
+│   │   └── queries.ts        # Raw SQL queries (optimized with JOINs)
 │   ├── services/
-│   │   ├── memory.ts          # Memory CRUD operations
-│   │   ├── checkpoint.ts      # Checkpoint management
-│   │   ├── search.ts          # Search/recall logic
-│   │   └── tags.ts            # Tag management
+│   │   ├── memory.ts         # Memory CRUD operations (with transactions)
+│   │   ├── checkpoint.ts     # Checkpoint management
+│   │   ├── search.ts         # Search/recall logic
+│   │   └── rollback.ts       # Rollback with atomic transactions
 │   ├── tools/
-│   │   ├── remember.ts        # remember tool implementation
-│   │   ├── recall.ts          # recall tool implementation
-│   │   ├── rollback.ts        # rollback tool implementation
-│   │   ├── search.ts          # search tool implementation
-│   │   └── management.ts      # checkpoint/list tools
+│   │   ├── remember.ts       # remember tool implementation
+│   │   ├── recall.ts         # recall tool implementation
+│   │   ├── rollback.ts       # rollback tool implementation
+│   │   ├── search.ts         # search tool implementation
+│   │   └── management.ts     # checkpoint/list/delete tools
 │   ├── types/
-│   │   └── index.ts           # TypeScript interfaces
+│   │   └── index.ts          # TypeScript interfaces
 │   └── utils/
-│       ├── logger.ts          # Structured logging
-│       └── validators.ts      # Input validation
+│       ├── logger.ts         # Structured JSON logging
+│       └── validators.ts     # Input validation (comprehensive)
+├── tests/
+│   └── e2e.test.ts          # End-to-end tests (25 tests)
 ├── scripts/
-│   └── init-db.ts             # Database initialization script
+│   └── init-db.ts           # Database initialization script
 ├── data/
-│   └── memory.db              # SQLite database file (created at runtime)
-├── .env.example               # Environment template
+│   └── memory.db             # SQLite database file (created at runtime)
+├── docs/
+│   ├── architecture.md       # This file
+│   └── security-audit.md     # Security audit report
+├── .env.example              # Environment template
+├── .gitignore                # Git ignore rules
+├── vitest.config.ts          # Test configuration
 ├── package.json
 ├── tsconfig.json
 └── README.md
