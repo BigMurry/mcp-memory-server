@@ -5,6 +5,7 @@ import type {
   RollbackInput,
   CreateCheckpointInput,
   DeleteMemoryInput,
+  ListCheckpointsInput,
 } from '../types/index.js';
 
 // Constants for limits
@@ -26,6 +27,22 @@ function isValidDate(dateString: string): boolean {
   return !isNaN(date.getTime());
 }
 
+// Shared helper for validating tags (DRY principle)
+function validateTagsArray(tags: unknown, fieldName: string = 'tags'): void {
+  if (!Array.isArray(tags)) {
+    throw new ValidationError(`${fieldName} must be an array`);
+  }
+  if (tags.length > 10) {
+    throw new ValidationError(`maximum 10 ${fieldName} allowed`);
+  }
+  if (tags.some(t => typeof t !== 'string')) {
+    throw new ValidationError(`all ${fieldName} must be strings`);
+  }
+  if (tags.some(t => t.length > MAX_TAG_LENGTH)) {
+    throw new ValidationError(`each ${fieldName} must be less than ${MAX_TAG_LENGTH} characters`);
+  }
+}
+
 export function validateRememberInput(input: unknown): RememberInput {
   const args = input as RememberInput;
 
@@ -42,17 +59,46 @@ export function validateRememberInput(input: unknown): RememberInput {
   }
 
   if (args.tags !== undefined) {
-    if (!Array.isArray(args.tags)) {
-      throw new ValidationError('tags must be an array');
+    validateTagsArray(args.tags, 'tags');
+  }
+
+  // Validate metadata if provided
+  if (args.metadata !== undefined) {
+    if (typeof args.metadata !== 'object' || args.metadata === null) {
+      throw new ValidationError('metadata must be an object');
     }
-    if (args.tags.length > 10) {
-      throw new ValidationError('maximum 10 tags allowed');
+
+    const metadata = args.metadata as Record<string, unknown>;
+
+    // Validate source if provided
+    if (metadata.source !== undefined) {
+      if (typeof metadata.source !== 'string') {
+        throw new ValidationError('metadata.source must be a string');
+      }
+      if (metadata.source.length > 200) {
+        throw new ValidationError('metadata.source must be less than 200 characters');
+      }
     }
-    if (args.tags.some(t => typeof t !== 'string')) {
-      throw new ValidationError('all tags must be strings');
+
+    // Validate importance if provided
+    if (metadata.importance !== undefined) {
+      const validImportanceValues = ['low', 'medium', 'high'];
+      const isValidString = typeof metadata.importance === 'string' && validImportanceValues.includes(metadata.importance);
+      const isValidNumber = typeof metadata.importance === 'number' && Number.isInteger(metadata.importance) && metadata.importance >= 0 && metadata.importance <= 10;
+
+      if (!isValidString && !isValidNumber) {
+        throw new ValidationError('metadata.importance must be "low", "medium", "high", or an integer between 0 and 10');
+      }
     }
-    if (args.tags.some(t => t.length > MAX_TAG_LENGTH)) {
-      throw new ValidationError(`each tag must be less than ${MAX_TAG_LENGTH} characters`);
+
+    // Validate expires_at if provided
+    if (metadata.expires_at !== undefined) {
+      if (typeof metadata.expires_at !== 'string') {
+        throw new ValidationError('metadata.expires_at must be a string');
+      }
+      if (!isValidDate(metadata.expires_at)) {
+        throw new ValidationError('metadata.expires_at must be a valid ISO date string');
+      }
     }
   }
 
@@ -97,6 +143,14 @@ export function validateRecallInput(input: unknown): RecallInput {
     }
   }
 
+  // Validate match_strategy if provided
+  if (args.match_strategy !== undefined) {
+    const validMatchStrategies = ['keyword', 'semantic'];
+    if (typeof args.match_strategy !== 'string' || !validMatchStrategies.includes(args.match_strategy)) {
+      throw new ValidationError(`match_strategy must be one of: ${validMatchStrategies.join(', ')}`);
+    }
+  }
+
   return args;
 }
 
@@ -113,7 +167,7 @@ export function validateSearchInput(input: unknown): SearchInput {
     }
   }
 
-  // Validate tags if provided
+  // Validate tags if provided - search allows unlimited tags but validates format
   if (args.tags !== undefined) {
     if (!Array.isArray(args.tags)) {
       throw new ValidationError('tags must be an array');
@@ -154,6 +208,14 @@ export function validateSearchInput(input: unknown): SearchInput {
       if (start > end) {
         throw new ValidationError('date_range.start must be before date_range.end');
       }
+    }
+  }
+
+  // Validate sort_by if provided
+  if (args.sort_by !== undefined) {
+    const validSortByValues = ['relevance', 'date_desc', 'date_asc'];
+    if (typeof args.sort_by !== 'string' || !validSortByValues.includes(args.sort_by)) {
+      throw new ValidationError(`sort_by must be one of: ${validSortByValues.join(', ')}`);
     }
   }
 
@@ -215,6 +277,24 @@ export function validateDeleteMemoryInput(input: unknown): DeleteMemoryInput {
 
   if (args.memory_id < 1) {
     throw new ValidationError('memory_id must be a positive number');
+  }
+
+  return args;
+}
+
+export function validateListCheckpointsInput(input: unknown): ListCheckpointsInput {
+  const args = input as ListCheckpointsInput;
+
+  if (args.limit !== undefined) {
+    if (typeof args.limit !== 'number' || args.limit < 1 || args.limit > MAX_LIMIT) {
+      throw new ValidationError(`limit must be a number between 1 and ${MAX_LIMIT}`);
+    }
+  }
+
+  if (args.offset !== undefined) {
+    if (typeof args.offset !== 'number' || args.offset < 0 || args.offset > MAX_OFFSET) {
+      throw new ValidationError(`offset must be a number between 0 and ${MAX_OFFSET}`);
+    }
   }
 
   return args;

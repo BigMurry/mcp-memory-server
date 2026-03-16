@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import { config } from '../config.js';
 
 export function runMigrations(db: Database.Database): void {
   // Create memories table
@@ -82,5 +81,14 @@ export function runMigrations(db: Database.Database): void {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_checkpoints_created ON checkpoints(created_at DESC);
+  `);
+
+  // Add indexes for memory_tags junction table to optimize JOINs
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_memory_tags_memory ON memory_tags(memory_id);
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag_id);
   `);
 }

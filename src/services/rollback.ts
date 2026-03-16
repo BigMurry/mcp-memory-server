@@ -1,5 +1,5 @@
 import * as queries from '../database/queries.js';
-import * as memoryService from './memory.js';
+import { getDatabase } from '../database/index.js';
 import * as checkpointService from './checkpoint.js';
 import type { RollbackInput, RollbackOutput } from '../types/index.js';
 
@@ -16,21 +16,25 @@ export function rollbackToCheckpoint(input: RollbackInput): RollbackOutput {
     throw new Error(`Checkpoint ${checkpoint_id} not found`);
   }
 
-  // Parse the snapshot
-  const snapshot = JSON.parse(checkpoint.memory_state_snapshot);
-
-  // Delete all current memories
-  queries.deleteAllMemories();
-
-  // Restore memories from snapshot
-  let restoredCount = 0;
-  for (const memory of snapshot) {
-    memoryService.createMemory({
-      content: memory.content,
-      tags: memory.tags || [],
-    });
-    restoredCount++;
+  // Parse the snapshot with proper error handling
+  let snapshot;
+  try {
+    snapshot = JSON.parse(checkpoint.memory_state_snapshot);
+  } catch (e) {
+    throw new Error('Failed to parse checkpoint snapshot: invalid JSON format');
   }
+
+  // Get database for atomic transaction
+  const db = getDatabase();
+
+  // Perform atomic rollback: delete + restore in single transaction
+  const restoredCount = db.transaction(() => {
+    // Delete all current memories
+    queries.deleteAllMemories();
+
+    // Restore memories using batch insert (much faster than row-by-row)
+    return queries.batchInsertMemories(snapshot);
+  })();
 
   // Create a new checkpoint to record this restore
   checkpointService.createCheckpoint({

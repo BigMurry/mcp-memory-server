@@ -1,4 +1,5 @@
 import * as queries from '../database/queries.js';
+import { getDatabase } from '../database/index.js';
 import type { RememberInput, RememberOutput, DeleteMemoryInput, DeleteMemoryOutput } from '../types/index.js';
 
 export function createMemory(input: RememberInput): RememberOutput {
@@ -17,25 +18,35 @@ export function createMemory(input: RememberInput): RememberOutput {
     throw new Error('Maximum 10 tags allowed');
   }
 
-  // Insert memory
   const metadataStr = metadata ? JSON.stringify(metadata) : undefined;
-  const memoryId = queries.insertMemory(content, metadataStr);
+  const db = getDatabase();
 
-  // Add tags
-  const tagIds: number[] = [];
-  for (const tagName of tags) {
-    const tagId = queries.getOrCreateTag(tagName);
-    tagIds.push(tagId);
-    queries.addTagToMemory(memoryId, tagId);
-  }
+  // Use transaction to ensure atomic memory + tag creation
+  const memoryId = db.transaction(() => {
+    // Insert memory
+    const id = queries.insertMemory(content, metadataStr);
+
+    // Add tags within the same transaction
+    for (const tagName of tags) {
+      const tagId = queries.getOrCreateTag(tagName);
+      queries.addTagToMemory(id, tagId);
+    }
+
+    return id;
+  })();
 
   // Get the created memory to return timestamp
   const memory = queries.getMemoryById(memoryId);
 
+  // Explicit null check instead of non-null assertion
+  if (!memory) {
+    throw new Error('Failed to retrieve created memory');
+  }
+
   return {
     success: true,
     memory_id: memoryId,
-    created_at: memory!.created_at,
+    created_at: memory.created_at,
     tags: tags.map(t => t.toLowerCase()),
   };
 }

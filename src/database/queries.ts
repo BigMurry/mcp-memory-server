@@ -1,7 +1,64 @@
 import { getDatabase } from './index.js';
 import type { MemoryWithTags } from '../types/index.js';
 
-// Memory queries
+// Memory queries - optimized with JOIN to avoid N+1 queries
+export function getAllMemoriesWithTags(): MemoryWithTags[] {
+  const db = getDatabase();
+  const memories = db.prepare(`
+    SELECT
+      m.id, m.content, m.metadata, m.created_at, m.updated_at,
+      GROUP_CONCAT(t.name) as tags_concat
+    FROM memories m
+    LEFT JOIN memory_tags mt ON m.id = mt.memory_id
+    LEFT JOIN tags t ON mt.tag_id = t.id
+    GROUP BY m.id
+    ORDER BY m.created_at DESC
+  `).all() as any[];
+  return memories.map(m => ({
+    ...m,
+    tags: m.tags_concat ? m.tags_concat.split(',') : [],
+  }));
+}
+
+export function getAllMemoriesLimitedWithTags(limit: number): MemoryWithTags[] {
+  const db = getDatabase();
+  const memories = db.prepare(`
+    SELECT
+      m.id, m.content, m.metadata, m.created_at, m.updated_at,
+      GROUP_CONCAT(t.name) as tags_concat
+    FROM memories m
+    LEFT JOIN memory_tags mt ON m.id = mt.memory_id
+    LEFT JOIN tags t ON mt.tag_id = t.id
+    GROUP BY m.id
+    ORDER BY m.created_at DESC
+    LIMIT ?
+  `).all(limit) as any[];
+  return memories.map(m => ({
+    ...m,
+    tags: m.tags_concat ? m.tags_concat.split(',') : [],
+  }));
+}
+
+export function getMemoryByIdWithTags(id: number): MemoryWithTags | null {
+  const db = getDatabase();
+  const memory = db.prepare(`
+    SELECT
+      m.id, m.content, m.metadata, m.created_at, m.updated_at,
+      GROUP_CONCAT(t.name) as tags_concat
+    FROM memories m
+    LEFT JOIN memory_tags mt ON m.id = mt.memory_id
+    LEFT JOIN tags t ON mt.tag_id = t.id
+    WHERE m.id = ?
+    GROUP BY m.id
+  `).get(id) as any;
+  if (!memory) return null;
+  return {
+    ...memory,
+    tags: memory.tags_concat ? memory.tags_concat.split(',') : [],
+  };
+}
+
+// Legacy functions for backward compatibility - now use optimized JOIN queries
 export function insertMemory(content: string, metadata?: string): number {
   const db = getDatabase();
   const stmt = db.prepare('INSERT INTO memories (content, metadata) VALUES (?, ?)');
@@ -10,30 +67,18 @@ export function insertMemory(content: string, metadata?: string): number {
 }
 
 export function getMemoryById(id: number): MemoryWithTags | null {
-  const db = getDatabase();
-  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as any;
-  if (!memory) return null;
-
-  const tags = getTagsForMemory(id);
-  return { ...memory, tags };
+  // Use optimized JOIN query instead of N+1
+  return getMemoryByIdWithTags(id);
 }
 
 export function getAllMemories(): MemoryWithTags[] {
-  const db = getDatabase();
-  const memories = db.prepare('SELECT * FROM memories ORDER BY created_at DESC').all() as any[];
-  return memories.map(m => ({
-    ...m,
-    tags: getTagsForMemory(m.id),
-  }));
+  // Use optimized JOIN query instead of N+1
+  return getAllMemoriesWithTags();
 }
 
 export function getAllMemoriesLimited(limit: number = 1000): MemoryWithTags[] {
-  const db = getDatabase();
-  const memories = db.prepare('SELECT * FROM memories ORDER BY created_at DESC LIMIT ?').all(limit) as any[];
-  return memories.map(m => ({
-    ...m,
-    tags: getTagsForMemory(m.id),
-  }));
+  // Use optimized JOIN query instead of N+1
+  return getAllMemoriesLimitedWithTags(limit);
 }
 
 export function deleteMemoryById(id: number): boolean {
@@ -53,23 +98,13 @@ export function getOrCreateTag(name: string): number {
   const db = getDatabase();
   const normalizedName = name.toLowerCase().trim();
 
-  // Try to find existing tag
-  const existing = db.prepare('SELECT id FROM tags WHERE name = ?').get(normalizedName) as { id: number } | undefined;
-  if (existing) return existing.id;
+  // Use INSERT OR IGNORE to atomically handle race conditions
+  // This prevents TOCTOU race between SELECT and INSERT
+  db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(normalizedName);
 
-  // Create new tag
-  const result = db.prepare('INSERT INTO tags (name) VALUES (?)').run(normalizedName);
-  return result.lastInsertRowid as number;
-}
-
-export function getTagsForMemory(memoryId: number): string[] {
-  const db = getDatabase();
-  const tags = db.prepare(`
-    SELECT t.name FROM tags t
-    JOIN memory_tags mt ON t.id = mt.tag_id
-    WHERE mt.memory_id = ?
-  `).all(memoryId) as { name: string }[];
-  return tags.map(t => t.name);
+  // Now get the tag (it must exist after INSERT OR IGNORE)
+  const existing = db.prepare('SELECT id FROM tags WHERE name = ?').get(normalizedName) as { id: number };
+  return existing.id;
 }
 
 export function addTagToMemory(memoryId: number, tagId: number): void {
@@ -77,16 +112,124 @@ export function addTagToMemory(memoryId: number, tagId: number): void {
   try {
     db.prepare('INSERT INTO memory_tags (memory_id, tag_id) VALUES (?, ?)').run(memoryId, tagId);
   } catch (e: any) {
-    // Ignore duplicate key errors
-    if (!e.message.includes('UNIQUE constraint failed')) {
+    // Ignore duplicate key errors - check for specific SQLite error code
+    // SQLITE_CONSTRAINT_UNIQUE = 1555, SQLITE_CONSTRAINT_PRIMARYKEY = 1555
+    if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE' && e.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') {
       throw e;
     }
+    // Duplicate entry is expected and safe to ignore
   }
 }
 
 export function removeTagsFromMemory(memoryId: number): void {
   const db = getDatabase();
   db.prepare('DELETE FROM memory_tags WHERE memory_id = ?').run(memoryId);
+}
+
+// Optimized search queries for tag-only and date-range filtering
+
+export function getMemoriesWithTagsAndDateFilter(
+  startDate?: string,
+  endDate?: string,
+  limit: number = 1000
+): MemoryWithTags[] {
+  const db = getDatabase();
+
+  let whereClause = '';
+  const params: any[] = [];
+
+  if (startDate) {
+    whereClause += 'WHERE m.created_at >= ?';
+    params.push(startDate);
+  }
+
+  if (endDate) {
+    whereClause += whereClause ? ' AND m.created_at <= ?' : 'WHERE m.created_at <= ?';
+    params.push(endDate);
+  }
+
+  const sql = `
+    SELECT
+      m.id, m.content, m.metadata, m.created_at, m.updated_at,
+      GROUP_CONCAT(t.name) as tags_concat
+    FROM memories m
+    LEFT JOIN memory_tags mt ON m.id = mt.memory_id
+    LEFT JOIN tags t ON mt.tag_id = t.id
+    ${whereClause}
+    GROUP BY m.id
+    ORDER BY m.created_at DESC
+    LIMIT ?
+  `;
+
+  params.push(limit);
+  const memories = db.prepare(sql).all(...params) as any[];
+  return memories.map(m => ({
+    ...m,
+    tags: m.tags_concat ? m.tags_concat.split(',') : [],
+  }));
+}
+
+export function getMemoriesByTags(
+  tags: string[],
+  limit: number = 1000
+): MemoryWithTags[] {
+  const db = getDatabase();
+  const normalizedTags = tags.map(t => t.toLowerCase());
+  const placeholders = normalizedTags.map(() => '?').join(',');
+
+  const sql = `
+    SELECT
+      m.id, m.content, m.metadata, m.created_at, m.updated_at,
+      GROUP_CONCAT(t.name) as tags_concat
+    FROM memories m
+    JOIN memory_tags mt ON m.id = mt.memory_id
+    JOIN tags t ON mt.tag_id = t.id
+    WHERE t.name IN (${placeholders})
+    GROUP BY m.id
+    HAVING COUNT(DISTINCT t.name) = ?
+    ORDER BY m.created_at DESC
+    LIMIT ?
+  `;
+
+  const params: any[] = [...normalizedTags, tags.length, limit];
+  const memories = db.prepare(sql).all(...params) as any[];
+  return memories.map(m => ({
+    ...m,
+    tags: m.tags_concat ? m.tags_concat.split(',') : [],
+  }));
+}
+
+// Batch insert for checkpoint restore
+export function batchInsertMemories(
+  memories: Array<{ content: string; metadata?: string; tags: string[] }>
+): number {
+  const db = getDatabase();
+  let insertedCount = 0;
+
+  const insertMemoryStmt = db.prepare('INSERT INTO memories (content, metadata) VALUES (?, ?)');
+  const insertTagStmt = db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)');
+  const getTagIdStmt = db.prepare('SELECT id FROM tags WHERE name = ?');
+  const insertMemoryTagStmt = db.prepare('INSERT INTO memory_tags (memory_id, tag_id) VALUES (?, ?)');
+
+  const transaction = db.transaction(() => {
+    for (const memory of memories) {
+      const result = insertMemoryStmt.run(memory.content, memory.metadata || null);
+      const memoryId = result.lastInsertRowid as number;
+
+      // Create or get tags
+      for (const tagName of memory.tags) {
+        const normalizedTag = tagName.toLowerCase().trim();
+        insertTagStmt.run(normalizedTag);
+        const tag = getTagIdStmt.get(normalizedTag) as { id: number };
+        insertMemoryTagStmt.run(memoryId, tag.id);
+      }
+
+      insertedCount++;
+    }
+  });
+
+  transaction();
+  return insertedCount;
 }
 
 // Checkpoint queries
@@ -104,14 +247,12 @@ export function getCheckpointById(id: number): any {
 
 export function getAllCheckpoints(limit: number = 10, offset: number = 0): any[] {
   const db = getDatabase();
+  // Count memories from the JSON snapshot for each checkpoint
   return db.prepare(`
-    SELECT c.*, COUNT(m.id) as memory_count
+    SELECT c.*, (
+      SELECT COUNT(*) FROM json_each(c.memory_state_snapshot)
+    ) as memory_count
     FROM checkpoints c
-    LEFT JOIN (
-      SELECT DISTINCT memory_id FROM memory_tags
-    ) mt ON 1=1
-    LEFT JOIN memories m ON 1=1
-    GROUP BY c.id
     ORDER BY c.created_at DESC
     LIMIT ? OFFSET ?
   `).all(limit, offset);

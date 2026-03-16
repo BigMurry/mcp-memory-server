@@ -1,7 +1,6 @@
 import { createCheckpoint, listCheckpoints } from '../services/checkpoint.js';
 import { deleteMemory } from '../services/memory.js';
-import { validateDeleteMemoryInput } from '../utils/validators.js';
-import type { ListCheckpointsInput } from '../types/index.js';
+import { validateDeleteMemoryInput, validateCreateCheckpointInput, validateListCheckpointsInput } from '../utils/validators.js';
 import { logger } from '../utils/logger.js';
 
 export function registerCreateCheckpointTool() {
@@ -21,7 +20,7 @@ export function registerCreateCheckpointTool() {
 }
 
 export async function handleCreateCheckpoint(args: unknown): Promise<unknown> {
-  const input = args as { description?: string };
+  const input = validateCreateCheckpointInput(args);
   logger.info('Create checkpoint called', { description: input.description });
   return createCheckpoint({ description: input.description });
 }
@@ -49,7 +48,7 @@ export function registerListCheckpointsTool() {
 }
 
 export async function handleListCheckpoints(args: unknown): Promise<unknown> {
-  const input = args as ListCheckpointsInput;
+  const input = validateListCheckpointsInput(args);
   return listCheckpoints(input);
 }
 

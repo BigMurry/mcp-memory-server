@@ -14,9 +14,8 @@ export function recallMemories(input: RecallInput): RecallOutput {
   // Use FTS for keyword search
   const results = queries.searchMemoriesFTS(query, limit, tags);
 
+  // Apply date range filter in memory (FTS results don't easily support date filtering in SQL)
   let filteredResults = results;
-
-  // Apply date range filter if specified
   if (date_range) {
     filteredResults = filteredResults.filter(m => {
       const createdAt = new Date(m.created_at);
@@ -30,9 +29,8 @@ export function recallMemories(input: RecallInput): RecallOutput {
     });
   }
 
-  // Transform results
+  // Transform results - use optimized query to get tags with JOIN
   const transformedResults = filteredResults.map(m => {
-    const tagsList = queries.getTagsForMemory(m.id);
     // BM25 returns negative scores, convert to positive relevance (0-1)
     // Lower (more negative) BM25 = better match, so we invert
     const relevanceScore = Math.max(0, Math.min(1, 1 / (1 + Math.abs(m.rank || 0))));
@@ -40,7 +38,7 @@ export function recallMemories(input: RecallInput): RecallOutput {
     return {
       memory_id: m.id,
       content: m.content,
-      tags: tagsList,
+      tags: m.tags || [],
       relevance_score: relevanceScore,
       created_at: m.created_at,
       updated_at: m.updated_at,
@@ -72,35 +70,40 @@ export function searchMemories(input: SearchInput): SearchOutput {
   if (query && query.trim().length > 0) {
     // Use FTS search
     const results = queries.searchMemoriesFTS(query, effectiveLimit * 2, tags);
-    memories = results;
+    memories = results.map(m => ({
+      ...m,
+      tags: m.tags || [],
+    }));
   } else if (tags && tags.length > 0) {
-    // Filter by tags only - get all memories and filter
-    // Limit the fetch to prevent memory exhaustion
-    const allMemories = queries.getAllMemoriesLimited(MAX_FETCH_MEMORIES);
-    memories = allMemories.filter(m => {
-      if (!m.tags) return false;
-      return tags.every(t => m.tags!.includes(t.toLowerCase()));
-    });
+    // Use optimized SQL JOIN query instead of loading 5000 rows
+    if (date_range && (date_range.start || date_range.end)) {
+      // When date range is specified, filter by date first, then tags
+      const memoriesWithDate = queries.getMemoriesWithTagsAndDateFilter(
+        date_range.start,
+        date_range.end,
+        MAX_FETCH_MEMORIES
+      );
+      memories = memoriesWithDate.filter(m => {
+        if (!m.tags) return false;
+        return tags.every(t => m.tags!.includes(t.toLowerCase()));
+      });
+    } else {
+      // Use SQL JOIN to filter by tags - much more efficient
+      memories = queries.getMemoriesByTags(tags, MAX_FETCH_MEMORIES);
+    }
+  } else if (date_range && (date_range.start || date_range.end)) {
+    // Use optimized query with date filter in SQL
+    memories = queries.getMemoriesWithTagsAndDateFilter(
+      date_range.start,
+      date_range.end,
+      MAX_FETCH_MEMORIES
+    );
   } else {
     // Get all memories with limit
     memories = queries.getAllMemoriesLimited(MAX_FETCH_MEMORIES);
   }
 
-  // Apply date range filter
-  if (date_range) {
-    memories = memories.filter(m => {
-      const createdAt = new Date(m.created_at);
-      if (date_range.start && createdAt < new Date(date_range.start)) {
-        return false;
-      }
-      if (date_range.end && createdAt > new Date(date_range.end)) {
-        return false;
-      }
-      return true;
-    });
-  }
-
-  // Sort
+  // Sort (if not already sorted by SQL)
   if (sort_by === 'date_asc') {
     memories.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   } else if (sort_by === 'date_desc') {

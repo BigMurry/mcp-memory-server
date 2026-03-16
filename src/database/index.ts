@@ -34,3 +34,11 @@ export function closeDatabase(): void {
     db = null;
   }
 }
+
+// For testing: reset the database connection
+export function resetDatabase(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
